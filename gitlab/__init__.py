@@ -53,6 +53,35 @@ def _sanitize(value):
     return value
 
 
+class DefaultWaitTimeStrategy(object):
+    def __call__(self, response, retries):
+        """Return wait time before next retry
+
+        Args:
+            response (requests.Response): HTTP response from previous attempt
+            retries (int): Number of retries done
+
+        Returns:
+            Number of seconds to wait before next retry
+        """
+
+        wait_time = self._get_from_response(response)
+        if wait_time is None:
+            wait_time = self._calculate_wait_time(response, retries)
+
+        return wait_time
+
+    def _get_from_response(self, response):
+        value = response.headers.get("Retry-After")
+        if value is None:
+            return None
+
+        return int(value)
+
+    def _calculate_wait_time(self, response, retries):
+        return 2 ** retries * 0.1
+
+
 class Gitlab(object):
     """Represents a GitLab server connection.
 
@@ -70,6 +99,8 @@ class Gitlab(object):
         http_username (str): Username for HTTP authentication
         http_password (str): Password for HTTP authentication
         api_version (str): Gitlab API version to use (support for 4 only)
+        get_wait_time (callable): Callable returning number of seconds to wait
+            until next retry
     """
 
     def __init__(
@@ -85,6 +116,7 @@ class Gitlab(object):
         api_version="4",
         session=None,
         per_page=None,
+        get_wait_time=None,
     ):
 
         self._api_version = str(api_version)
@@ -110,6 +142,8 @@ class Gitlab(object):
         self.session = session or requests.Session()
 
         self.per_page = per_page
+
+        self._get_wait_time = get_wait_time or DefaultWaitTimeStrategy()
 
         objects = importlib.import_module("gitlab.v%s.objects" % self._api_version)
         self._objects = objects
@@ -532,9 +566,7 @@ class Gitlab(object):
 
             if 429 == result.status_code and obey_rate_limit:
                 if max_retries == -1 or cur_retries < max_retries:
-                    wait_time = 2 ** cur_retries * 0.1
-                    if "Retry-After" in result.headers:
-                        wait_time = int(result.headers["Retry-After"])
+                    wait_time = self._get_wait_time(result, cur_retries)
                     cur_retries += 1
                     time.sleep(wait_time)
                     continue

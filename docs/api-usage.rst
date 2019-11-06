@@ -345,6 +345,25 @@ throttled, you can set this parameter to -1. This parameter is ignored if
    gl = gitlab.gitlab(url, token, api_version=4)
    gl.projects.list(all=True, max_retries=12)
 
+You can provide custom retry time strategy by providing ``get_wait_time`` argument:
+
+.. code-block:: python
+
+   import gitlab
+
+   def get_custom_wait_time(response, retries):
+       retry_after = response.headers("Retry-After")
+       if retry_after:
+           return int(retry_after)
+
+       return 2 ** cur_retries * 0.1
+
+   gl = gitlab.gitlab(url, token, api_version=4, get_wait_time=get_custom_wait_time)
+   gl.projects.list(all=True, max_retries=12)
+
+Note that the above ``get_custom_wait_time`` is identical to the default behaviour.
+
+
 .. warning::
 
    You will get an Exception, if you then go over the rate limit of your GitLab instance.

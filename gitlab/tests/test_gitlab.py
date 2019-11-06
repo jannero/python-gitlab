@@ -839,3 +839,32 @@ class TestRetryWaitTime(unittest.TestCase):
             sleep_mock.call_args_list[3][0][0],
             2 ** 3 * 0.1,
         )
+
+    @unittest.mock.patch('gitlab.time.sleep', name='sleep mock')
+    def test_custom_retry_wait_time(self, sleep_mock):
+        self.gl = Gitlab(
+            "http://localhost",
+            private_token="private_token",
+            ssl_verify=True,
+            api_version=4,
+            session=self.session_mock,
+            get_wait_time=unittest.mock.Mock(side_effect=[100, 200]),
+        )
+
+        self.session_mock.send.side_effect = [
+            response(429, headers={"Retry-After": "60"}),
+            response(429),
+            response(200),
+        ]
+
+        http_r = self.gl.http_request("get", "/projects", max_retries=2)
+
+        self.assertEqual(http_r.status_code, 200)
+
+        self.assertEqual(
+            [
+                unittest.mock.call(100),
+                unittest.mock.call(200),
+            ],
+            sleep_mock.call_args_list,
+        )
