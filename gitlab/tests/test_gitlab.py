@@ -21,6 +21,7 @@ import pickle
 import tempfile
 import json
 import unittest
+import unittest.mock
 
 from httmock import HTTMock  # noqa
 from httmock import response  # noqa
@@ -789,3 +790,52 @@ class TestGitlab(unittest.TestCase):
         gl = MyGitlab.from_config("one", [config_path])
         self.assertIsInstance(gl, MyGitlab)
         os.unlink(config_path)
+
+
+class TestRetryWaitTime(unittest.TestCase):
+    def setUp(self):
+        self.session_mock = unittest.mock.Mock(name='Session mock')
+        self.session_mock.prepare_request.return_value.url = "http://localhost"
+        self.session_mock.merge_environment_settings.return_value = {}
+
+    @unittest.mock.patch('gitlab.time.sleep', name='sleep mock')
+    def test_default_retry_wait_time(self, sleep_mock):
+        self.gl = Gitlab(
+            "http://localhost",
+            private_token="private_token",
+            ssl_verify=True,
+            api_version=4,
+            session=self.session_mock,
+        )
+
+        self.session_mock.send.side_effect = [
+            response(429, headers={"Retry-After": "60"}),
+            response(429, headers={"Retry-After": "180"}),
+            response(429),
+            response(429),
+            response(200),
+        ]
+
+        http_r = self.gl.http_request("get", "/projects", max_retries=4)
+
+        self.assertEqual(http_r.status_code, 200)
+
+        self.assertEqual(
+            [
+                unittest.mock.call(60),
+                unittest.mock.call(180),
+                unittest.mock.call(unittest.mock.ANY),
+                unittest.mock.call(unittest.mock.ANY),
+            ],
+            sleep_mock.call_args_list,
+        )
+
+        self.assertAlmostEqual(
+            sleep_mock.call_args_list[2][0][0],
+            2 ** 2 * 0.1,
+        )
+
+        self.assertAlmostEqual(
+            sleep_mock.call_args_list[3][0][0],
+            2 ** 3 * 0.1,
+        )
