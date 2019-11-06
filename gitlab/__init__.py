@@ -82,6 +82,35 @@ class DefaultWaitTimeStrategy(object):
         return 2 ** retries * 0.1
 
 
+class RequestThrottler(object):
+    def __init__(self, max_requests_per_period=600, period=60):
+        self.max_requests_per_period = max_requests_per_period
+        self.period = period
+
+        self.calls_within_period = []
+
+    def __call__(self):
+        current_time = time.monotonic()
+
+        cutoff_time = current_time - self.period
+        self._remove_calls_before(cutoff_time)
+
+        if len(self.calls_within_period) >= self.max_requests_per_period:
+            new_cutoff_time = self.calls_within_period.pop(0) + 1
+            self._remove_calls_before(current_time - self.period)
+
+            self._wait(new_cutoff_time - cutoff_time)
+
+        self.calls_within_period.append(time.monotonic())
+
+    def _remove_calls_before(self, cutoff_time):
+        while self.calls_within_period and self.calls_within_period[0] < cutoff_time:
+            self.calls_within_period.pop(0)
+
+    def _wait(self, wait_time):
+        time.sleep(wait_time)
+
+
 class Gitlab(object):
     """Represents a GitLab server connection.
 
@@ -117,6 +146,7 @@ class Gitlab(object):
         session=None,
         per_page=None,
         get_wait_time=None,
+        throttle_requests=None,
     ):
 
         self._api_version = str(api_version)
@@ -144,6 +174,7 @@ class Gitlab(object):
         self.per_page = per_page
 
         self._get_wait_time = get_wait_time or DefaultWaitTimeStrategy()
+        self._throttle_requests = throttle_requests or RequestThrottler()
 
         objects = importlib.import_module("gitlab.v%s.objects" % self._api_version)
         self._objects = objects
@@ -557,6 +588,7 @@ class Gitlab(object):
         cur_retries = 0
 
         while True:
+            self._throttle_requests()
             result = self.session.send(prepped, timeout=timeout, **settings)
 
             self._check_redirects(result)

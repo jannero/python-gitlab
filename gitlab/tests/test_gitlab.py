@@ -794,11 +794,11 @@ class TestGitlab(unittest.TestCase):
 
 class TestRetryWaitTime(unittest.TestCase):
     def setUp(self):
-        self.session_mock = unittest.mock.Mock(name='Session mock')
+        self.session_mock = unittest.mock.Mock(name="Session mock")
         self.session_mock.prepare_request.return_value.url = "http://localhost"
         self.session_mock.merge_environment_settings.return_value = {}
 
-    @unittest.mock.patch('gitlab.time.sleep', name='sleep mock')
+    @unittest.mock.patch("gitlab.time.sleep", name="sleep mock")
     def test_default_retry_wait_time(self, sleep_mock):
         self.gl = Gitlab(
             "http://localhost",
@@ -831,16 +831,14 @@ class TestRetryWaitTime(unittest.TestCase):
         )
 
         self.assertAlmostEqual(
-            sleep_mock.call_args_list[2][0][0],
-            2 ** 2 * 0.1,
+            sleep_mock.call_args_list[2][0][0], 2 ** 2 * 0.1,
         )
 
         self.assertAlmostEqual(
-            sleep_mock.call_args_list[3][0][0],
-            2 ** 3 * 0.1,
+            sleep_mock.call_args_list[3][0][0], 2 ** 3 * 0.1,
         )
 
-    @unittest.mock.patch('gitlab.time.sleep', name='sleep mock')
+    @unittest.mock.patch("gitlab.time.sleep", name="sleep mock")
     def test_custom_retry_wait_time(self, sleep_mock):
         self.gl = Gitlab(
             "http://localhost",
@@ -862,9 +860,55 @@ class TestRetryWaitTime(unittest.TestCase):
         self.assertEqual(http_r.status_code, 200)
 
         self.assertEqual(
-            [
-                unittest.mock.call(100),
-                unittest.mock.call(200),
-            ],
+            [unittest.mock.call(100), unittest.mock.call(200),],
             sleep_mock.call_args_list,
         )
+
+
+class TestRequestThrottler(unittest.TestCase):
+    def setUp(self):
+        self.throttler = gitlab.RequestThrottler(5, 10)
+
+        monotonic_patcher = unittest.mock.patch(
+            "gitlab.time.monotonic", name="monotonic mock", return_value=0,
+        )
+        self.monotonic_mock = monotonic_patcher.start()
+        self.addCleanup(monotonic_patcher.stop)
+
+        sleep_patcher = unittest.mock.patch(
+            "gitlab.time.sleep", name="sleep mock", side_effect=self._sleep,
+        )
+        self.sleep_mock = sleep_patcher.start()
+        self.addCleanup(sleep_patcher.stop)
+
+    def _sleep(self, sleep_time):
+        self.monotonic_mock.return_value += sleep_time
+
+    def test_throttling(self):
+        for _ in range(0, 5):
+            self.monotonic_mock.return_value += 1
+            self.throttler()
+
+        self.assertFalse(self.sleep_mock.called)
+        self.assertEqual([1, 2, 3, 4, 5], self.throttler.calls_within_period)
+
+        self.monotonic_mock.return_value += 1
+        self.assertEqual(self.monotonic_mock.return_value, 6)
+        self.throttler()
+
+        self.sleep_mock.assert_called_once_with(6)
+        self.assertEqual(self.monotonic_mock.return_value, 12)
+
+        self.assertEqual([2, 3, 4, 5, 12], self.throttler.calls_within_period)
+
+        self.sleep_mock.reset_mock()
+
+        self.monotonic_mock.return_value += 1
+        self.throttler()
+        self.assertFalse(self.sleep_mock.called)
+        self.assertEqual([3, 4, 5, 12, 13], self.throttler.calls_within_period)
+
+        self.monotonic_mock.return_value = 100
+        self.throttler()
+        self.assertFalse(self.sleep_mock.called)
+        self.assertEqual([100], self.throttler.calls_within_period)
